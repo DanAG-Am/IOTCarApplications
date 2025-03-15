@@ -1,0 +1,202 @@
+#include <HTTPClient.h>
+#include <LiquidCrystal_I2C.h>
+#include <DHT.h>  // Include DHT sensor library
+#include <WiFi.h>
+
+// LCD setup
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// Pin definitions for components connected to ESP32
+#define TRIG_PIN 5
+#define ECHO_PIN 4
+#define LED1_PIN 13    
+#define LED2_PIN 15    
+#define DHT_PIN 32    // Pin for DHT11 sensor
+#define BUZZER_PIN 19  
+#define OBSTACLE_PIN 18 
+
+// 5 LED bar pins
+#define LED_PIN1 2
+#define LED_PIN2 14
+#define LED_PIN3 27
+#define LED_PIN4 26
+#define LED_PIN5 25
+
+const char* ssid = "";  
+const char* password = "";  
+// ThingSpeak setup
+const String API_KEY = "";  // Replace with your ThingSpeak Write API Key
+const String THINGSPEAK_URL = ""; //thingspeak url update
+
+// Initialize DHT sensor (DHT11)
+DHT dht(DHT_PIN, DHT11);
+
+// Variable to store the flashing state
+bool ledState = false;  // LED state for flashing
+
+void setup() {
+  lcd.init();                
+  lcd.backlight();           
+  WiFi.begin(ssid, password);
+  Serial.println();
+  Serial.println("Connected to WiFi");
+  Serial.println(WiFi.localIP());  // Print IP address
+  pinMode(TRIG_PIN, OUTPUT); 
+  pinMode(ECHO_PIN, INPUT); 
+
+  pinMode(LED1_PIN, OUTPUT); 
+  pinMode(LED2_PIN, OUTPUT); 
+  pinMode(DHT_PIN, INPUT);  // DHT sensor pin
+  pinMode(BUZZER_PIN, OUTPUT); 
+  pinMode(OBSTACLE_PIN, INPUT); // For obstacle detection
+
+  // Set up the 5 LED pins
+  pinMode(LED_PIN1, OUTPUT);
+  pinMode(LED_PIN2, OUTPUT);
+  pinMode(LED_PIN3, OUTPUT);
+  pinMode(LED_PIN4, OUTPUT);
+  pinMode(LED_PIN5, OUTPUT);
+
+  Serial.begin(115200); 
+  dht.begin();  // Start DHT sensor
+  delay(1000); 
+  lcd.clear();
+}
+
+void loop() {
+  // Measure the distance using the ultrasonic sensor
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2); 
+  digitalWrite(TRIG_PIN, HIGH); 
+  delayMicroseconds(10); 
+  digitalWrite(TRIG_PIN, LOW); 
+
+  int duracion = pulseIn(ECHO_PIN, HIGH); 
+  int distance = (duracion * 0.0343) / 2; 
+  
+  Serial.print("Duracion: ");
+  Serial.println(duracion);  
+  Serial.print("Distancia: ");
+  Serial.println(distance);
+
+  // Read humidity from the DHT11 sensor
+  float humidity = dht.readHumidity(); // Get humidity percentage
+
+  // Check if humidity is valid (DHT sensor might fail sometimes)
+  if (isnan(humidity)) {
+    Serial.println("Failed to read from DHT sensor!");
+    return;
+  }
+
+  // Display distance and humidity on LCD
+  lcd.clear();
+  lcd.setCursor(0, 0);       
+  lcd.print("Distancia: ");
+  lcd.print(distance);     
+  lcd.setCursor(0, 1);
+  lcd.print("Humid: ");
+  lcd.print(humidity);
+  lcd.print("%");
+
+  delay(1000); // Wait for 1 second before the next loop
+
+  // Control LEDs based on humidity (flashing hazard lights effect)
+  float humidityThreshold = 60.0;  // Set the humidity threshold for turning on LEDs
+  if (humidity > humidityThreshold) {
+    // If humidity exceeds the threshold, start flashing the LEDs (hazard lights effect)
+    hazardLightEffect();  // Call function to make LEDs flash
+  }
+
+  // Generate tone based on distance (between 0 and 20 cm)
+  if (distance <= 20 && distance > 0) {
+    int toneFreq = map(distance, 0, 20, 2000, 500); // Map the distance to a frequency (2000 Hz at 0 cm to 500 Hz at 20 cm)
+    tone(BUZZER_PIN, toneFreq);  // Play the tone
+  } else {
+    noTone(BUZZER_PIN);  // Stop the tone if distance is above 20 cm
+  }
+
+  // Control LEDs based on distance (representing the distance with the LED bar)
+  if (distance <= 20) {
+    int ledCount = map(distance, 0, 20, 5, 0);  // Map distance to number of LEDs to light up (5 LEDs represent 0-20 cm)
+    updateLEDs(ledCount);  // Update the LED bar based on the mapped value
+  } else {
+    // If distance is above 20 cm, turn off the LEDs
+    updateLEDs(0);
+  }
+
+  // Obstacle detection logic
+  if (digitalRead(OBSTACLE_PIN) == LOW) {
+    lcd.clear();
+    Serial.println("Obstacle!");
+    lcd.setCursor(0, 0); 
+    lcd.print("Obstacle!");
+
+    // Play warning sound on the buzzer
+    tone(BUZZER_PIN, 1000);  // First beep at 1000 Hz
+    delay(300);  // Duration of the first "beep"
+    noTone(BUZZER_PIN);  // Stop the buzzer
+    delay(100);  // Pause between beeps
+    tone(BUZZER_PIN, 1500);  // Second beep at 1500 Hz (higher pitch)
+    delay(300);  // Duration of the second "beep"
+    noTone(BUZZER_PIN);  // Stop the buzzer
+    delay(100);  // Pause between beeps
+  }
+
+  // Send data to ThingSpeak
+  sendToThingSpeak(humidity, distance, digitalRead(OBSTACLE_PIN) == LOW);
+}
+
+// Function to create hazard light effect by flashing LEDs
+void hazardLightEffect() {
+  ledState = !ledState;  // Toggle the LED state
+  
+  if (ledState) {
+    // Turn on both LED1 and LED2
+    digitalWrite(LED1_PIN, HIGH);
+    digitalWrite(LED2_PIN, HIGH);
+    delay(100);
+    // Turn off both LED1 and LED2
+    digitalWrite(LED1_PIN, LOW);
+    digitalWrite(LED2_PIN, LOW);
+    delay(100);
+  }
+}
+
+// Function to update the LED bar based on the number of lit LEDs
+void updateLEDs(int ledCount) {
+  // Turn off all LEDs first
+  digitalWrite(LED_PIN1, LOW);
+  digitalWrite(LED_PIN2, LOW);
+  digitalWrite(LED_PIN3, LOW);
+  digitalWrite(LED_PIN4, LOW);
+  digitalWrite(LED_PIN5, LOW);
+
+  // Light up the LEDs based on the count
+  if (ledCount >= 1) digitalWrite(LED_PIN1, HIGH);
+  if (ledCount >= 2) digitalWrite(LED_PIN2, HIGH);
+  if (ledCount >= 3) digitalWrite(LED_PIN3, HIGH);
+  if (ledCount >= 4) digitalWrite(LED_PIN4, HIGH);
+  if (ledCount == 5) digitalWrite(LED_PIN5, HIGH);
+}
+
+// Function to send data to ThingSpeak
+void sendToThingSpeak(float humidity, int distance, bool obstacle) {
+
+  HTTPClient http;
+
+  String url = THINGSPEAK_URL + "?api_key=" + API_KEY +
+               "&field1=" + String(humidity) +
+               "&field2=" + String(distance) +
+               "&field3=" + String(obstacle ? 1 : 0);
+
+  http.begin(url);  // Initialize the HTTP request
+  int httpResponseCode = http.GET();  // Send the GET request
+
+  if (httpResponseCode > 0) {
+    Serial.println("Data sent successfully to ThingSpeak");
+  } else {
+    Serial.println("Error sending data to ThingSpeak: " + String(httpResponseCode));
+  }
+
+  http.end();  // Close the HTTP connection
+}
